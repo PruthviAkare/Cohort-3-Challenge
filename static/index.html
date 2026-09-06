@@ -1,0 +1,604 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Personal Gemini Journal</title>
+    <meta name="description" content="Secure, multi-turn AI journaling vault with Firebase Auth, Cloud Firestore isolation, and automated synthesis.">
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-app.js";
+        import { getAuth, signInWithPopup, GoogleAuthProvider, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-auth.js";
+        
+        const firebaseConfig = {
+            projectId: "gen-lang-client-0619523054",
+            appId: "1:343121375467:web:f76c959ba14b5135f34eae",
+            apiKey: "AIzaSyCt9uxQ0Bv5jAj_WbRCnLyjLucdEs4IImQ",
+            authDomain: "gen-lang-client-0619523054.firebaseapp.com",
+            storageBucket: "gen-lang-client-0619523054.firebasestorage.app",
+            messagingSenderId: "343121375467"
+        };
+        
+        const app = initializeApp(firebaseConfig);
+        const auth = getAuth(app);
+        
+        let currentIdToken = null;
+        let currentUser = null;
+        let currentSessionId = 'sess_' + Date.now();
+        let currentMode = "Reflective Journaling";
+        let allSessions = [];
+        let activeFilter = "All";
+        let lastFailedRequest = null;
+        
+        const ui = {
+            loginScreen: document.getElementById('login-screen'),
+            dashboard: document.getElementById('dashboard'),
+            signInBtn: document.getElementById('btn-sign-in'),
+            signOutBtn: document.getElementById('btn-sign-out'),
+            userName: document.getElementById('user-name'),
+            chatBox: document.getElementById('chat-box'),
+            inputMsg: document.getElementById('input-msg'),
+            btnSend: document.getElementById('btn-send'),
+            btnNewSession: document.getElementById('btn-new-session'),
+            btnSummarize: document.getElementById('btn-summarize'),
+            btnQuickNew: document.getElementById('btn-quick-new'),
+            errorBanner: document.getElementById('error-banner'),
+            errorMsg: document.getElementById('error-msg'),
+            btnRetry: document.getElementById('btn-retry'),
+            sessionList: document.getElementById('session-list'),
+            sessionCount: document.getElementById('session-count'),
+            searchInput: document.getElementById('search-input'),
+            filterContainer: document.getElementById('filter-container'),
+            modeContainer: document.getElementById('mode-container'),
+            activeModeText: document.getElementById('active-mode-text'),
+            synthesisEmpty: document.getElementById('synthesis-empty'),
+            synthesisContent: document.getElementById('synthesis-content'),
+            synthesisSummary: document.getElementById('synthesis-summary'),
+            synthesisTones: document.getElementById('synthesis-tones'),
+            synthesisActions: document.getElementById('synthesis-actions'),
+        };
+
+        function formatTime(date = new Date()) {
+            return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+        }
+
+        function appendMessage(role, text, time = formatTime()) {
+            const wrapper = document.createElement('div');
+            wrapper.className = `flex flex-col mb-5 ${role === 'user' ? 'items-end' : 'items-start'}`;
+
+            const header = document.createElement('div');
+            header.className = 'text-[11px] text-gray-500 mb-1 px-1 font-medium';
+            header.textContent = role === 'user' ? `You • ${time}` : `Gemini Companion • ${time}`;
+
+            const bubble = document.createElement('div');
+            if (role === 'user') {
+                bubble.className = 'max-w-[80%] bg-[#b45309]/20 border border-[#f59e0b]/30 rounded-2xl rounded-tr-none px-4 py-3 text-sm leading-relaxed text-gray-100 shadow-sm';
+            } else {
+                bubble.className = 'max-w-[85%] bg-[#1A1A1A] border border-white/10 rounded-2xl rounded-tl-none px-4 py-3 text-sm leading-relaxed text-gray-200 shadow-sm';
+            }
+            bubble.textContent = text;
+
+            wrapper.appendChild(header);
+            wrapper.appendChild(bubble);
+            ui.chatBox.appendChild(wrapper);
+            ui.chatBox.scrollTop = ui.chatBox.scrollHeight;
+        }
+
+        function resetChatStream() {
+            ui.chatBox.innerHTML = '';
+            appendMessage('model', `Welcome to your private journal vault. What would you like to reflect upon or explore today?`);
+        }
+
+        function showError(msg, retryCallback) {
+            ui.errorMsg.textContent = msg;
+            ui.errorBanner.classList.remove('hidden');
+            lastFailedRequest = retryCallback;
+        }
+
+        ui.btnRetry.addEventListener('click', () => {
+            ui.errorBanner.classList.add('hidden');
+            if (lastFailedRequest) lastFailedRequest();
+        });
+
+        // Auth listener
+        onAuthStateChanged(auth, async (user) => {
+            if (user) {
+                currentUser = user;
+                ui.loginScreen.classList.add('hidden');
+                ui.dashboard.classList.remove('hidden');
+                ui.userName.textContent = user.displayName || user.email?.split('@')[0] || 'User';
+                currentIdToken = await user.getIdToken();
+                resetChatStream();
+                loadSessions();
+            } else {
+                currentUser = null;
+                currentIdToken = null;
+                ui.loginScreen.classList.remove('hidden');
+                ui.dashboard.classList.add('hidden');
+            }
+        });
+
+        ui.signInBtn.addEventListener('click', () => {
+            const provider = new GoogleAuthProvider();
+            signInWithPopup(auth, provider).catch((err) => {
+                showError('Sign-in failed: ' + err.message);
+            });
+        });
+
+        ui.signOutBtn.addEventListener('click', () => {
+            signOut(auth);
+        });
+
+        // Mode Switching
+        const modes = [
+            { id: "Reflective Journaling", icon: "📖", placeholder: "Express your thoughts in reflective journaling mode..." },
+            { id: "Creative Brainstorm", icon: "💡", placeholder: "Explore expansive ideas, metaphors, and associative thoughts..." },
+            { id: "Problem Solver", icon: "🎯", placeholder: "Break down the challenge, core constraints, and next steps..." },
+            { id: "Gratitude & Wins", icon: "✨", placeholder: "Celebrate milestones, meaningful lessons, and gratitude..." }
+        ];
+
+        function renderModes() {
+            ui.modeContainer.innerHTML = '';
+            modes.forEach(m => {
+                const btn = document.createElement('button');
+                const isActive = currentMode === m.id;
+                btn.className = `px-3.5 py-1.5 rounded-full text-xs font-medium transition-all flex items-center gap-1.5 whitespace-nowrap ${
+                    isActive
+                        ? 'bg-[#b45309]/20 border border-[#f59e0b] text-[#f59e0b] shadow-sm'
+                        : 'bg-white/5 border border-white/10 text-gray-400 hover:text-white hover:bg-white/10'
+                }`;
+                btn.innerHTML = `<span>${m.icon}</span> <span>${m.id}</span>`;
+                btn.onclick = () => {
+                    currentMode = m.id;
+                    ui.activeModeText.textContent = currentMode;
+                    ui.inputMsg.placeholder = m.placeholder;
+                    renderModes();
+                };
+                ui.modeContainer.appendChild(btn);
+            });
+        }
+        renderModes();
+
+        // Send Message
+        async function sendMessage() {
+            const msg = ui.inputMsg.value.trim();
+            if (!msg) return;
+
+            appendMessage('user', msg);
+            ui.inputMsg.value = '';
+
+            const doSend = async () => {
+                try {
+                    const res = await fetch('/api/chat', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'Authorization': `Bearer ${currentIdToken}`
+                        },
+                        body: JSON.stringify({
+                            sessionId: currentSessionId,
+                            message: msg,
+                            mode: currentMode
+                        })
+                    });
+
+                    if (!res.ok) {
+                        const errData = await res.json().catch(() => ({}));
+                        throw new Error(errData.error || 'Server request failed');
+                    }
+                    const data = await res.json();
+                    appendMessage('model', data.reply);
+                    loadSessions();
+                } catch (err) {
+                    ui.inputMsg.value = msg;
+                    showError(err.message, doSend);
+                }
+            };
+            doSend();
+        }
+
+        ui.btnSend.addEventListener('click', sendMessage);
+        ui.inputMsg.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                sendMessage();
+            }
+        });
+
+        // Summarize & Save Vault
+        async function summarizeSession() {
+            const doSummarize = async () => {
+                try {
+                    ui.btnSummarize.disabled = true;
+                    ui.btnSummarize.textContent = 'Synthesizing...';
+
+                    const res = await fetch('/api/summarize', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'Authorization': `Bearer ${currentIdToken}`
+                        },
+                        body: JSON.stringify({ sessionId: currentSessionId })
+                    });
+
+                    if (!res.ok) {
+                        const errData = await res.json().catch(() => ({}));
+                        throw new Error(errData.error || 'Summarization failed');
+                    }
+                    const data = await res.json();
+                    renderSynthesis(data);
+                    loadSessions();
+                } catch (err) {
+                    showError(err.message, doSummarize);
+                } finally {
+                    ui.btnSummarize.disabled = false;
+                    ui.btnSummarize.innerHTML = `<svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 3v4M3 5h4M6 17v4m-2-2h4m5-16l2.286 6.857L21 12l-5.714 2.143L13 21l-2.286-6.857L5 12l5.714-2.143L13 3z"/></svg> Summarize & Save Vault`;
+                }
+            };
+            doSummarize();
+        }
+
+        ui.btnSummarize.addEventListener('click', summarizeSession);
+
+        function renderSynthesis(data) {
+            if (!data || (!data.summary && !data.text)) {
+                ui.synthesisEmpty.classList.remove('hidden');
+                ui.synthesisContent.classList.add('hidden');
+                return;
+            }
+
+            ui.synthesisEmpty.classList.add('hidden');
+            ui.synthesisContent.classList.remove('hidden');
+
+            ui.synthesisSummary.textContent = data.summary || data.text || '';
+
+            ui.synthesisTones.innerHTML = '';
+            (data.emotionalTone || []).forEach(tone => {
+                const tag = document.createElement('span');
+                tag.className = 'px-2.5 py-1 bg-[#f59e0b]/10 border border-[#f59e0b]/30 rounded-lg text-xs font-medium text-[#f59e0b]';
+                tag.textContent = tone;
+                ui.synthesisTones.appendChild(tag);
+            });
+
+            ui.synthesisActions.innerHTML = '';
+            (data.actionItems || []).forEach(action => {
+                const item = document.createElement('li');
+                item.className = 'flex items-start gap-2 text-xs text-gray-300 leading-relaxed';
+                item.innerHTML = `
+                    <span class="text-[#f59e0b] mt-0.5">•</span>
+                    <span>${action}</span>
+                `;
+                ui.synthesisActions.appendChild(item);
+            });
+        }
+
+        // New Session
+        function startNewSession() {
+            currentSessionId = 'sess_' + Date.now();
+            resetChatStream();
+            ui.synthesisEmpty.classList.remove('hidden');
+            ui.synthesisContent.classList.add('hidden');
+        }
+
+        ui.btnNewSession.addEventListener('click', startNewSession);
+        ui.btnQuickNew.addEventListener('click', startNewSession);
+
+        // Load Sessions
+        async function loadSessions() {
+            try {
+                const res = await fetch('/api/sessions', {
+                    headers: { 'Authorization': `Bearer ${currentIdToken}` }
+                });
+                if (!res.ok) return;
+                const data = await res.json();
+                allSessions = data.sessions || [];
+                renderSessionList();
+            } catch (err) {
+                console.error('Failed to load sessions:', err);
+            }
+        }
+
+        function renderSessionList() {
+            const query = (ui.searchInput.value || '').toLowerCase();
+            const filtered = allSessions.filter(s => {
+                const matchesMode = activeFilter === 'All' || s.mode === activeFilter;
+                const matchesQuery = !query || (s.title && s.title.toLowerCase().includes(query));
+                return matchesMode && matchesQuery;
+            });
+
+            ui.sessionCount.textContent = allSessions.length;
+            ui.sessionList.innerHTML = '';
+
+            if (filtered.length === 0) {
+                ui.sessionList.innerHTML = `
+                    <div class="p-8 text-center flex flex-col items-center justify-center text-gray-500">
+                        <svg class="w-8 h-8 mb-2 stroke-gray-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
+                        </svg>
+                        <p class="text-xs font-medium">No entries found matching your criteria.</p>
+                    </div>
+                `;
+                return;
+            }
+
+            filtered.forEach(s => {
+                const item = document.createElement('div');
+                const isSelected = s.id === currentSessionId;
+                item.className = `p-3 rounded-xl border transition-all cursor-pointer mb-2 ${
+                    isSelected
+                        ? 'bg-white/10 border-[#f59e0b]/40 shadow-sm'
+                        : 'bg-white/5 border-white/5 hover:border-white/20 hover:bg-white/[0.07]'
+                }`;
+
+                const dateStr = s.updatedAt ? new Date(s.updatedAt).toLocaleDateString([], { month: 'short', day: 'numeric' }) : '';
+                item.innerHTML = `
+                    <div class="flex items-center justify-between text-[11px] text-gray-400 mb-1">
+                        <span class="px-2 py-0.5 rounded bg-white/5 border border-white/10 text-[10px] font-semibold text-[#f59e0b]">${s.mode || 'Reflection'}</span>
+                        <span>${dateStr}</span>
+                    </div>
+                    <div class="text-xs font-medium text-gray-200 truncate">${s.title || 'Untitled Reflection'}</div>
+                `;
+                item.onclick = () => viewSession(s.id);
+                ui.sessionList.appendChild(item);
+            });
+        }
+
+        async function viewSession(id) {
+            try {
+                currentSessionId = id;
+                const res = await fetch(`/api/sessions/${id}`, {
+                    headers: { 'Authorization': `Bearer ${currentIdToken}` }
+                });
+                if (!res.ok) throw new Error('Failed to load session');
+                const data = await res.json();
+
+                ui.chatBox.innerHTML = '';
+                const turns = data.turns || [];
+                if (turns.length === 0) {
+                    resetChatStream();
+                } else {
+                    turns.forEach(t => appendMessage(t.role, t.content, t.timestamp ? formatTime(new Date(t.timestamp)) : formatTime()));
+                }
+
+                if (data.session && data.session.mode) {
+                    currentMode = data.session.mode;
+                    ui.activeModeText.textContent = currentMode;
+                    renderModes();
+                }
+
+                renderSynthesis(data.summary);
+                renderSessionList();
+            } catch (err) {
+                showError(err.message);
+            }
+        }
+
+        ui.searchInput.addEventListener('input', renderSessionList);
+
+        // Filters in Vault
+        const filterPills = ["All", "Reflect", "Brainstorm", "Problem Solving", "Gratitude & Wins"];
+        ui.filterContainer.innerHTML = '';
+        filterPills.forEach(f => {
+            const pill = document.createElement('button');
+            const isActive = activeFilter === f;
+            pill.className = `px-2.5 py-1 rounded-lg text-[11px] font-medium transition-all whitespace-nowrap ${
+                isActive
+                    ? 'bg-[#b45309]/20 border border-[#f59e0b]/60 text-[#f59e0b]'
+                    : 'bg-white/5 border border-white/5 text-gray-400 hover:text-white'
+            }`;
+            pill.textContent = f;
+            pill.onclick = () => {
+                activeFilter = f;
+                Array.from(ui.filterContainer.children).forEach(c => {
+                    c.className = 'px-2.5 py-1 rounded-lg text-[11px] font-medium transition-all whitespace-nowrap bg-white/5 border border-white/5 text-gray-400 hover:text-white';
+                });
+                pill.className = 'px-2.5 py-1 rounded-lg text-[11px] font-medium transition-all whitespace-nowrap bg-[#b45309]/20 border border-[#f59e0b]/60 text-[#f59e0b]';
+                renderSessionList();
+            };
+            ui.filterContainer.appendChild(pill);
+        });
+    </script>
+</head>
+<body class="bg-[#0A0A0A] text-gray-200 font-sans h-screen flex flex-col overflow-hidden antialiased select-none">
+
+    <!-- Auth / Login Screen -->
+    <div id="login-screen" class="flex-1 flex flex-col items-center justify-center p-6 text-center">
+        <div class="w-16 h-16 rounded-2xl bg-[#b45309]/20 border border-[#f59e0b]/30 flex items-center justify-center mb-6 shadow-xl shadow-amber-500/10">
+            <svg class="w-8 h-8 text-[#f59e0b]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"/>
+            </svg>
+        </div>
+        <h1 class="text-3xl font-bold mb-3 text-white tracking-tight">Personal Gemini Journal</h1>
+        <p class="text-gray-400 text-sm max-w-md mb-8 leading-relaxed">Enterprise-grade private journaling vault with owner-isolated Cloud Firestore storage and Gemini-powered synthesis.</p>
+        <button id="btn-sign-in" class="bg-[#b45309] hover:bg-[#d97706] text-white font-semibold py-3 px-8 rounded-full transition-all shadow-lg shadow-amber-500/20 flex items-center gap-3">
+            <svg class="w-5 h-5" viewBox="0 0 24 24">
+                <path fill="currentColor" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
+                <path fill="currentColor" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
+                <path fill="currentColor" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z"/>
+                <path fill="currentColor" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"/>
+            </svg>
+            Sign In with Google
+        </button>
+    </div>
+
+    <!-- Main Dashboard -->
+    <div id="dashboard" class="hidden flex-1 flex flex-col h-full overflow-hidden">
+        
+        <!-- Top App Navigation Bar -->
+        <header class="h-14 bg-[#121212] border-b border-white/5 px-6 flex items-center justify-between shrink-0 z-20">
+            <div class="flex items-center gap-3">
+                <div class="w-8 h-8 rounded-lg bg-[#b45309]/20 border border-[#f59e0b]/40 flex items-center justify-center">
+                    <svg class="w-4 h-4 text-[#f59e0b]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"/>
+                    </svg>
+                </div>
+                <span class="font-semibold text-sm tracking-tight text-white">Personal Gemini Journal</span>
+            </div>
+
+            <!-- Main Tabs -->
+            <div class="flex items-center gap-1 bg-black/40 border border-white/5 p-1 rounded-xl">
+                <button class="px-3 py-1.5 rounded-lg text-xs font-semibold bg-[#261f14] border border-[#d97706]/40 text-[#f59e0b] flex items-center gap-1.5 shadow-sm">
+                    <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z"/></svg>
+                    Journal Studio
+                </button>
+                <button class="px-3 py-1.5 rounded-lg text-xs font-medium text-gray-400 hover:text-white flex items-center gap-1.5 transition-colors">
+                    <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
+                    Calendar Log
+                </button>
+                <button class="px-3 py-1.5 rounded-lg text-xs font-medium text-gray-400 hover:text-white flex items-center gap-1.5 transition-colors">
+                    <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
+                    Notes
+                </button>
+                <button class="px-3 py-1.5 rounded-lg text-xs font-medium text-gray-400 hover:text-white flex items-center gap-1.5 transition-colors">
+                    <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zM14 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z"/></svg>
+                    Cognitive Insights
+                </button>
+            </div>
+
+            <!-- User Status & Logout -->
+            <div class="flex items-center gap-3">
+                <div class="text-right">
+                    <div id="user-name" class="text-xs font-semibold text-gray-200">User</div>
+                    <div class="text-[10px] text-[#10b981] flex items-center gap-1 font-medium">
+                        <span class="w-1.5 h-1.5 rounded-full bg-[#10b981]"></span>
+                        Isolated Vault
+                    </div>
+                </div>
+                <button id="btn-sign-out" title="Sign Out" class="p-2 rounded-lg bg-white/5 border border-white/10 text-gray-400 hover:text-white hover:bg-white/10 transition-colors">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"/>
+                    </svg>
+                </button>
+            </div>
+        </header>
+
+        <!-- 3-Column Layout -->
+        <div class="flex-1 flex overflow-hidden">
+            
+            <!-- Left Column: Journal Vault (280px) -->
+            <aside class="w-[280px] bg-[#0E0E0E] border-r border-white/5 flex flex-col shrink-0">
+                <div class="p-4 border-b border-white/5 flex items-center justify-between">
+                    <div class="flex items-center gap-2">
+                        <svg class="w-4 h-4 text-[#f59e0b]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253"/>
+                        </svg>
+                        <span class="text-xs font-semibold text-white tracking-wide">Journal Vault</span>
+                        <span id="session-count" class="text-[10px] bg-white/10 px-2 py-0.5 rounded-full text-gray-400 font-bold">0</span>
+                    </div>
+                    <button id="btn-quick-new" title="New Session" class="w-6 h-6 rounded-md bg-[#f59e0b] hover:bg-[#d97706] text-black font-bold flex items-center justify-center text-sm shadow-sm transition-colors">
+                        +
+                    </button>
+                </div>
+
+                <div class="p-3 border-b border-white/5">
+                    <div class="relative mb-2.5">
+                        <input id="search-input" type="text" placeholder="Search reflections, tags, insights..." class="w-full bg-[#181818] border border-white/10 rounded-lg pl-8 pr-3 py-1.5 text-xs text-gray-200 placeholder:text-gray-500 focus:outline-none focus:border-[#f59e0b]/50 transition-all">
+                        <svg class="w-3.5 h-3.5 text-gray-500 absolute left-2.5 top-2.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
+                    </div>
+
+                    <!-- Filter pills -->
+                    <div id="filter-container" class="flex items-center gap-1.5 overflow-x-auto pb-1 scrollbar-none"></div>
+                </div>
+
+                <div id="session-list" class="flex-1 overflow-y-auto p-3 space-y-1"></div>
+            </aside>
+
+            <!-- Center Column: Interactive Journal Studio (Flex-1) -->
+            <main class="flex-1 flex flex-col bg-[#0A0A0A] relative overflow-hidden">
+                
+                <!-- Error banner -->
+                <div id="error-banner" class="hidden absolute top-4 left-1/2 transform -translate-x-1/2 bg-red-900/70 border border-red-500/50 text-red-200 px-4 py-2 rounded-xl shadow-2xl z-30 flex items-center gap-3 backdrop-blur-md">
+                    <span id="error-msg" class="text-xs font-medium"></span>
+                    <button id="btn-retry" class="bg-red-600 hover:bg-red-500 text-white px-2.5 py-1 rounded-lg text-xs font-medium transition-colors">Retry</button>
+                </div>
+
+                <!-- Top Mode Selector & Actions Bar -->
+                <div class="p-4 border-b border-white/5 flex flex-col gap-3 shrink-0 bg-[#0C0C0C]">
+                    <div class="flex items-center justify-between">
+                        <div id="mode-container" class="flex items-center gap-2 overflow-x-auto pb-0.5"></div>
+                    </div>
+
+                    <div class="flex items-center justify-between">
+                        <div class="flex items-center gap-2">
+                            <button id="btn-new-session" class="px-3.5 py-1.5 rounded-lg bg-white/5 border border-white/10 hover:bg-white/10 text-xs font-medium text-white transition-colors flex items-center gap-1.5">
+                                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
+                                New Session
+                            </button>
+                            <button id="btn-summarize" class="px-4 py-1.5 rounded-lg bg-[#b45309] hover:bg-[#d97706] text-white text-xs font-semibold transition-all shadow-lg shadow-amber-500/20 flex items-center gap-1.5">
+                                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 3v4M3 5h4M6 17v4m-2-2h4m5-16l2.286 6.857L21 12l-5.714 2.143L13 21l-2.286-6.857L5 12l5.714-2.143L13 3z"/></svg>
+                                Summarize & Save Vault
+                            </button>
+                        </div>
+
+                        <!-- Active Mode status -->
+                        <div class="flex items-center gap-2 text-[11px] text-gray-400">
+                            <span class="w-2 h-2 rounded-full bg-[#10b981] animate-pulse"></span>
+                            <span>Active Mode: <strong id="active-mode-text" class="text-gray-200">Reflective Journaling</strong></span>
+                            <span class="text-gray-600">•</span>
+                            <span class="text-gray-400 flex items-center gap-1">
+                                <svg class="w-3 h-3 text-[#f59e0b]" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/></svg>
+                                Isolated Server Gemini Proxy
+                            </span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Chat Messages Stream -->
+                <div id="chat-box" class="flex-1 overflow-y-auto p-6 flex flex-col text-[#eae5eb]"></div>
+
+                <!-- Chat Input Box -->
+                <div class="p-4 border-t border-white/5 bg-[#0C0C0C]">
+                    <div class="max-w-4xl mx-auto relative flex items-center">
+                        <input id="input-msg" type="text" placeholder="Express your thoughts in reflective journaling mode..." class="w-full bg-[#181818] border border-white/10 rounded-xl pl-4 pr-12 py-3 text-sm text-gray-200 placeholder:text-gray-500 focus:outline-none focus:border-[#f59e0b]/60 transition-all shadow-inner">
+                        <button id="btn-send" class="absolute right-2 p-2 rounded-lg bg-[#b45309] hover:bg-[#d97706] text-white transition-colors flex items-center justify-center">
+                            <svg class="w-4 h-4 transform rotate-45 -translate-y-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8"/></svg>
+                        </button>
+                    </div>
+                </div>
+            </main>
+
+            <!-- Right Column: Automated Synthesis & Action Items (340px) -->
+            <aside class="w-[340px] bg-[#0E0E0E] border-l border-white/5 flex flex-col shrink-0">
+                <div class="p-4 border-b border-white/5 flex items-center gap-2">
+                    <svg class="w-4 h-4 text-[#f59e0b]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
+                    </svg>
+                    <span class="text-xs font-semibold text-white tracking-wide">Automated Synthesis & Action Items</span>
+                </div>
+
+                <div class="flex-1 overflow-y-auto p-4">
+                    <!-- Empty State -->
+                    <div id="synthesis-empty" class="h-full flex flex-col items-center justify-center text-center p-6">
+                        <div class="w-12 h-12 rounded-xl bg-white/5 border border-white/10 flex items-center justify-center mb-4">
+                            <svg class="w-6 h-6 text-[#f59e0b]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M5 3v4M3 5h4M6 17v4m-2-2h4m5-16l2.286 6.857L21 12l-5.714 2.143L13 21l-2.286-6.857L5 12l5.714-2.143L13 3z"/>
+                            </svg>
+                        </div>
+                        <h3 class="text-sm font-semibold text-gray-200 mb-2">No Synthesis Generated Yet</h3>
+                        <p class="text-xs text-gray-500 leading-relaxed max-w-xs">Chat freely in your private journal. When ready, click 'Summarize & Save Vault' to automatically extract takeaways, emotional tone, and next actions.</p>
+                    </div>
+
+                    <!-- Populated State -->
+                    <div id="synthesis-content" class="hidden space-y-4">
+                        <div class="p-3.5 rounded-xl bg-[#141414] border border-white/10">
+                            <div class="text-[10px] uppercase font-bold tracking-widest text-gray-400 mb-2">Core Reflection Summary</div>
+                            <p id="synthesis-summary" class="text-xs text-gray-200 leading-relaxed"></p>
+                        </div>
+
+                        <div class="p-3.5 rounded-xl bg-[#141414] border border-white/10">
+                            <div class="text-[10px] uppercase font-bold tracking-widest text-gray-400 mb-2">Emotional Tone & Themes</div>
+                            <div id="synthesis-tones" class="flex flex-wrap gap-1.5"></div>
+                        </div>
+
+                        <div class="p-3.5 rounded-xl bg-[#141414] border border-white/10">
+                            <div class="text-[10px] uppercase font-bold tracking-widest text-gray-400 mb-2">Takeaways & Next Actions</div>
+                            <ul id="synthesis-actions" class="space-y-2"></ul>
+                        </div>
+                    </div>
+                </div>
+            </aside>
+        </div>
+    </div>
+
+</body>
+</html>

@@ -1,0 +1,55 @@
+{
+  "entities": {
+    "UserSession": {
+      "collection": "users/{userId}/sessions",
+      "fields": {
+        "id": { "type": "string", "description": "Unique session identifier" },
+        "mode": { "type": "string", "description": "Journaling mode (e.g. Reflective, Brainstorm)" },
+        "title": { "type": "string", "description": "Title of the session" },
+        "moodEmoji": { "type": "string", "description": "Mood emoji representing the overall session" },
+        "moodLabel": { "type": "string", "description": "Descriptive mood label" },
+        "createdAt": { "type": "string", "description": "ISO timestamp" },
+        "updatedAt": { "type": "string", "description": "ISO timestamp" },
+        "hasSummary": { "type": "boolean", "description": "Whether session has an automated synthesis" },
+        "summaryText": { "type": "string", "description": "Executive reflection summary" }
+      }
+    },
+    "CalendarDay": {
+      "collection": "users/{userId}/calendar",
+      "fields": {
+        "date": { "type": "string", "description": "Calendar date in YYYY-MM-DD format" },
+        "note": { "type": "string", "description": "User daily intentions or thoughts" },
+        "moodEmoji": { "type": "string", "description": "Dominant mood emoji for the day" },
+        "moodLabel": { "type": "string", "description": "Dominant mood label for the day" },
+        "daySummary": { "type": "string", "description": "AI-generated holistic summary of the day" },
+        "updatedAt": { "type": "string", "description": "ISO timestamp" }
+      }
+    },
+    "NoteItem": {
+      "collection": "users/{userId}/notes",
+      "fields": {
+        "id": { "type": "string", "description": "Unique note identifier" },
+        "title": { "type": "string", "description": "Note title or summary line" },
+        "content": { "type": "string", "description": "Raw note body" },
+        "category": { "type": "string", "description": "Note category tag (Idea, Reflection, Habit, etc.)" },
+        "moodEmoji": { "type": "string", "description": "Mood emoji expressing the note tone" },
+        "moodLabel": { "type": "string", "description": "Descriptive mood label" },
+        "tags": { "type": "array", "description": "Keywords and emotional tags" },
+        "color": { "type": "string", "description": "Card visual accent color" },
+        "isPinned": { "type": "boolean", "description": "Whether note is pinned to top" },
+        "createdAt": { "type": "string", "description": "ISO timestamp" },
+        "updatedAt": { "type": "string", "description": "ISO timestamp" }
+      }
+    },
+    "CognitiveAudit": {
+      "collection": "users/{userId}/insights",
+      "fields": {
+        "id": { "type": "string", "description": "Insight record identifier" },
+        "growthScore": { "type": "number", "description": "Evaluated cognitive growth score 1-100" },
+        "mindsetAssessment": { "type": "string", "description": "Psychological summary of recent entries" },
+        "weeklyFocus": { "type": "string", "description": "Key recommendation and focus area" },
+        "generatedAt": { "type": "string", "description": "ISO timestamp" }
+      }
+    }
+  }
+}

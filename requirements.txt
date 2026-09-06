@@ -1,0 +1,6 @@
+fastapi
+uvicorn
+google-cloud-secret-manager
+firebase-admin
+google-genai
+pydantic

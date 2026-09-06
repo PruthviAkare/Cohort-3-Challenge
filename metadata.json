@@ -1,0 +1,8 @@
+{
+  "name": "Personal Gemini Journal",
+  "description": "Secure, multi-turn AI journaling vault with Firebase Auth, Cloud Firestore isolation, and automated synthesis.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

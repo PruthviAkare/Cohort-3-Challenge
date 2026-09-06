@@ -1,0 +1,4 @@
+--- server.ts
++++ server.ts
+@@ -1071,6 +1071,10 @@
+   app.get("/api/notes", authenticate, async (req: Request, res: Response) => {
